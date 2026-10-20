@@ -1,5 +1,5 @@
---- a/src/models/qwen3_8_flash_next/impl/load/materialized.cpp	2026-10-19 17:22:00.000000000 +0800
-+++ b/src/models/qwen3_8_flash_next/impl/load/materialized.cpp	2026-10-20 22:44:02.112081090 +0800
+--- a/src/models/qwen3_8_flash_next/impl/load/materialized.cpp
++++ b/src/models/qwen3_8_flash_next/impl/load/materialized.cpp
 @@ -12,6 +12,9 @@
  #include <cstring>
  // WIN32_LEAN_AND_MEAN/NOMINMAX before windows.h: PrefetchVirtualMemory is the only Win32 call this
@@ -51,7 +51,8 @@
 +        char perms[8]            = {0};
 +        if (std::sscanf(line, "%llx-%llx %7s", &start, &end, perms) != 3) { continue; }
 +        if (target < start || target >= end) { continue; }
-+        // A path column marks a file-backed range; without one the range is anonymous.
++        verdict = (std::strchr(perms, 'p') != nullptr) ? "MEM_PRIVATE" : "MEM_PRIVATE";
++        // A path column (anything after the inode) marks a file-backed range.
 +        verdict = (std::strchr(line, '/') != nullptr) ? "MEM_MAPPED" : "MEM_PRIVATE";
 +        break;
 +    }
