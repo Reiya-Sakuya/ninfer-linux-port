@@ -1,0 +1,19 @@
+# 运行镜像：运行时不需要 CUDA toolkit，只需要驱动 + ffmpeg/curl
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        libavformat60 libavcodec60 libavutil58 libswscale7 libcurl4 \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY ninfer-serve /opt/ninfer/ninfer-serve
+RUN chmod +x /opt/ninfer/ninfer-serve
+
+WORKDIR /opt/ninfer
+
+# 用法见 docs/gotchas.md：驱动 < 610 时需要手动挂 libcuda.so / libnvidia-ml.so，
+# 不能用 --gpus all。
+ENTRYPOINT ["/opt/ninfer/ninfer-serve"]
