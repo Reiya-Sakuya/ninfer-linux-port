@@ -8,6 +8,9 @@ name: build-and-release
 #
 # Manual dispatch takes cuda_arch so people on 40-series (89) and 50-series (120)
 # can get a binary without a local build.
+#
+# NOTE: scripts are invoked as `bash <script>`, not `./<script>`. Files committed
+# through the API land with mode 644, so the executable bit is not guaranteed.
 on:
   workflow_dispatch:
     inputs:
@@ -36,11 +39,12 @@ jobs:
           path: upstream
 
       - name: Apply Linux port patches
-        run: ./apply.sh upstream/src-tree/fusion-engine-src
+        run: bash apply.sh upstream/src-tree/fusion-engine-src
 
       - name: Build in CUDA 13.3 container
         run: |
           ARCH="${{ inputs.cuda_arch || '86' }}"
+          mkdir -p out
           docker run --rm \
             -v "$PWD/upstream/src-tree/fusion-engine-src:/src:ro" \
             -v "$PWD/out:/out" \
@@ -71,6 +75,21 @@ jobs:
               chmod +x /out/ninfer-serve
             '
 
+      - name: Verify binary loads
+        run: |
+          # Resolves libraries but needs no GPU. Fails loudly if a runtime dep is missing.
+          docker run --rm -v "$PWD/out:/out:ro" ubuntu:24.04 bash -c '
+            set -e
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+              libavformat60 libavcodec60 libavutil58 libswscale7 libcurl4
+            chmod +x /out/ninfer-serve
+            if ldd /out/ninfer-serve 2>&1 | grep -q "not found"; then
+              echo "MISSING LIBS:"; ldd /out/ninfer-serve | grep "not found"; exit 1
+            fi
+            echo "all shared libraries resolve (libcuda resolved at runtime on the host)"
+          '
+
       - name: Package
         run: |
           ARCH="${{ inputs.cuda_arch || '86' }}"
@@ -80,6 +99,7 @@ jobs:
           tar czf "${NAME}.tar.gz" -C out ninfer-serve README.txt SHA256SUMS.txt
           sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
           ls -lh "${NAME}.tar.gz"
+          cat "${NAME}.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
