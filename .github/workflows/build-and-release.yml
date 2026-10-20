@@ -78,16 +78,20 @@ jobs:
       - name: Verify binary loads
         run: |
           # Resolves libraries but needs no GPU. Fails loudly if a runtime dep is missing.
-          docker run --rm -v "$PWD/out:/out:ro" ubuntu:24.04 bash -c '
+          # /out is mounted read-only, so copy out before chmod'ing. The
+          # earlier version chmod'ed in place and `set -e` turned the resulting
+          # "Read-only file system" into a failed verify on a good build.
+          docker run --rm -v "$PWD/out:/src:ro" ubuntu:24.04 bash -c '
             set -e
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
               libavformat60 libavcodec60 libavutil58 libswscale7 libcurl4
-            chmod +x /out/ninfer-serve
-            if ldd /out/ninfer-serve 2>&1 | grep -q "not found"; then
-              echo "MISSING LIBS:"; ldd /out/ninfer-serve | grep "not found"; exit 1
+            cp /src/ninfer-serve /tmp/ninfer-serve
+            chmod +x /tmp/ninfer-serve
+            if ldd /tmp/ninfer-serve 2>&1 | grep -q "not found"; then
+              echo "MISSING LIBS:"; ldd /tmp/ninfer-serve | grep "not found"; exit 1
             fi
-            echo "all shared libraries resolve (libcuda resolved at runtime on the host)"
+            echo "all shared libraries resolve outside the CUDA image"
           '
 
       - name: Package
