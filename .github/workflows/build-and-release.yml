@@ -1,0 +1,99 @@
+name: build-and-release
+
+# Builds ninfer-serve on GitHub runners and attaches it to a Release.
+#
+# Compilation needs no GPU -- only the CUDA toolkit -- so a standard runner works.
+# Building here instead of uploading a 545 MB blob means the binary is traceable to
+# a commit, and anyone can re-run the same build and compare hashes.
+#
+# Manual dispatch takes cuda_arch so people on 40-series (89) and 50-series (120)
+# can get a binary without a local build.
+on:
+  workflow_dispatch:
+    inputs:
+      cuda_arch:
+        description: 'CUDA arch: 86 = RTX 30xx/A10/A6000, 89 = RTX 40xx, 120 = RTX 50xx'
+        required: false
+        default: '86'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout upstream
+        uses: actions/checkout@v4
+        with:
+          repository: 1314521gjy/ninfer-fusion-kvmem
+          path: upstream
+
+      - name: Apply Linux port patches
+        run: ./apply.sh upstream/src-tree/fusion-engine-src
+
+      - name: Build in CUDA 13.3 container
+        run: |
+          ARCH="${{ inputs.cuda_arch || '86' }}"
+          docker run --rm \
+            -v "$PWD/upstream/src-tree/fusion-engine-src:/src:ro" \
+            -v "$PWD/out:/out" \
+            -e ARCH="$ARCH" \
+            nvidia/cuda:13.3.0-devel-ubuntu24.04 \
+            bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+                cmake ninja-build gcc-13 g++-13 pkg-config \
+                libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+                libcurl4-openssl-dev
+              # Build inside tmpfs: CUDA compiles are write-heavy, slow on CoW filesystems.
+              mkdir -p /tmpfs/src && cp -a /src/. /tmpfs/src/
+              cd /tmpfs/src
+              export CC=/usr/bin/gcc-13 CXX=/usr/bin/g++-13
+              export CUDACXX=/usr/local/cuda/bin/nvcc CUDAHOSTCXX=/usr/bin/g++-13
+              cmake -S . -B /tmpfs/build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER=/usr/bin/gcc-13 \
+                -DCMAKE_CXX_COMPILER=/usr/bin/g++-13 \
+                -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+                -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 \
+                -DCMAKE_CUDA_ARCHITECTURES=$ARCH \
+                -DNINFER_BUILD_APPS=ON -DBUILD_TESTING=OFF -DNINFER_BUILD_BENCHMARKS=OFF
+              cmake --build /tmpfs/build --parallel 2 --target ninfer-serve
+              cp /tmpfs/build/apps/ninfer-serve /out/ninfer-serve
+              chmod +x /out/ninfer-serve
+            '
+
+      - name: Package
+        run: |
+          ARCH="${{ inputs.cuda_arch || '86' }}"
+          NAME="ninfer-serve-linux-x86_64-sm${ARCH}-cuda13.3"
+          cp releases/BINARY-README.txt out/README.txt
+          ( cd out && sha256sum ninfer-serve > SHA256SUMS.txt )
+          tar czf "${NAME}.tar.gz" -C out ninfer-serve README.txt SHA256SUMS.txt
+          sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+          ls -lh "${NAME}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ninfer-serve-linux-sm${{ inputs.cuda_arch || '86' }}
+          path: |
+            ninfer-serve-linux-*.tar.gz
+            ninfer-serve-linux-*.tar.gz.sha256
+          retention-days: 90
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ninfer-serve-linux-*.tar.gz
+            ninfer-serve-linux-*.tar.gz.sha256
+          body_path: releases/BINARY-README.txt
