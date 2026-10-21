@@ -77,21 +77,26 @@ jobs:
 
       - name: Verify binary loads
         run: |
-          # Resolves libraries but needs no GPU. Fails loudly if a runtime dep is missing.
-          # /out is mounted read-only, so copy out before chmod'ing. The
-          # earlier version chmod'ed in place and `set -e` turned the resulting
-          # "Read-only file system" into a failed verify on a good build.
-          docker run --rm -v "$PWD/out:/src:ro" ubuntu:24.04 bash -c '
+          # Runs ldd inside the CUDA runtime image so libcudart/libcublas resolve
+          # the way they will on a user's machine. Only libcuda is expected to be
+          # missing: the driver injects it at `docker run --gpus` time, never at
+          # build time. Anything else missing is a real packaging bug.
+          #
+          # /src is read-only, so the binary is copied before chmod'ing.
+          docker run --rm -v "$PWD/out:/src:ro" \
+            nvidia/cuda:13.3.0-runtime-ubuntu24.04 bash -c '
             set -e
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
               libavformat60 libavcodec60 libavutil58 libswscale7 libcurl4
             cp /src/ninfer-serve /tmp/ninfer-serve
             chmod +x /tmp/ninfer-serve
-            if ldd /tmp/ninfer-serve 2>&1 | grep -q "not found"; then
-              echo "MISSING LIBS:"; ldd /tmp/ninfer-serve | grep "not found"; exit 1
+            MISSING=$(ldd /tmp/ninfer-serve | grep "not found" | grep -v "libcuda.so" || true)
+            if [ -n "$MISSING" ]; then
+              echo "UNEXPECTED MISSING LIBS:"; echo "$MISSING"; exit 1
             fi
-            echo "all shared libraries resolve outside the CUDA image"
+            echo "all libraries except the driver-supplied libcuda resolve"
+            grep -c "libcuda.so" <(ldd /tmp/ninfer-serve) | xargs -I{} echo "libcuda refs: {} (resolved by driver at runtime)"
           '
 
       - name: Package
